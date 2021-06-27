@@ -2,7 +2,9 @@
 nagios check to verify Red Hat Enterprise Linux subscription status
 
 # Requirements
-perl, ssh, cron on nagios server
+perl, ssh on nagios server
+
+Access to root crontab on monitored RHEL host
 
 Internet access from RHEL host to query Red Hat subscription servers
 
