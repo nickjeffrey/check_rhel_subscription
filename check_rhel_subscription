@@ -1,0 +1,348 @@
+#!/usr/bin/perl -w
+
+
+#get rid of %rhelsub
+
+
+# CHANGE LOG
+# ----------
+#  2021-05-30	njeffrey	Script created
+
+
+
+# nagios check to verify Red Hat Enterprise Linux subscription status
+#
+# The subscription-manager command requires root priviles to run, 
+# so run this script daily from the root crontab to generate a file the nagios check can read
+
+
+# CONFIGURATION
+# -------------
+#  Create a crontab entry for the root user similar to:
+#  59 11,23 * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
+#
+#  This script is executed remotely on a monitored system by the NRPE or check_by_ssh
+#  methods available in nagios.  
+#
+#  If you hare using the check_by_ssh method, you will need a section in the services.cfg
+#  file on the nagios server that looks similar to the following.
+#  This assumes that you already have ssh key pairs configured.
+#  # Define service for checking time synchronization 
+#  define service{
+#     use                             generic-service
+#     hostgroup_name                  all_rhel
+#     service_description             RHEL subscription
+#     check_interval                  7200     ; only check every 12 hours
+#     check_command                   check_by_ssh!/usr/local/nagios/libexec/check_rhel_subscription
+#     }
+#
+#  Alternatively, if you are using the NRPE method, you should have a section similar to the following in 
+#  the services.cfg file:
+#  define service{
+#     use                             generic-service
+#     hostgroup_name                  all_rhel
+#     service_description             RHEL subscription
+#     check_command                   check_nrpe!check_rhel_subscription
+#     normal_check_interval           7200     ; only check every 12 hours
+#     }
+#
+#  If you are using the NRPE method, you will also need a command definition similar to the following on each monitored host
+#  in the /usr/local/nagios/nrpe/nrpe.cfg file:
+#      command[check_rhel_subscription]=/usr/local/nagios/libexec/check_rhel_subscription
+
+
+
+
+# TROUBLESHOOTING
+# ---------------
+#
+#   This script requires root privileges to run the subscription-manager command
+#
+#   Rather than give the nagios user and additional privileges, this script will run from the root crontab every 12 hours,
+#   generating a /tmp/nagios.check_rhel_subscription.tmp file.  This file will be read by the low-privileged nagios user
+#   when the check is run from nagios.
+#   Ensure the root crontab has an entry similar to the following:
+#   59 11,23 * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
+
+
+
+
+use strict;						#enforce good coding practices
+use Getopt::Long;                       		#allow --long-switches to be used as parameters
+use Time::Local;					#perform date/time calculations   yum install perl-Time-Local
+
+
+# Declare variables
+my ($product_id,$days_warn,$days_crit,$subscriptionmanager,$cmd,%rhelsub);
+my ($sec, $min, $hour, $mday, $mon, $year);
+my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
+my ($epoch_seconds_timestamp,$epoch_seconds_now);
+my ($output_filename,$output_file_age,$output_message,$common_output_data,$perf_data,$verbose,$datecalc);
+my ($opt_h,$opt_v,$opt_w,$opt_c);
+my ($OK,$WARN,$CRITICAL,$UNKNOWN,$CHECK_NAME);
+$product_id = 479;						# Product ID 479 is RHEL
+$days_warn  = 30;						# default value, can be overridden with --warn=#
+$days_crit  = 15;						# default value, can be overridden with --crit=#
+$subscriptionmanager = "/usr/bin/subscription-manager";	#location of binary
+$verbose = "no";						#yes|no flag to increase verbosity for debugging
+$CHECK_NAME = "RHEL subscription";
+#
+# Nagios return codes
+#
+$OK=		0;
+$WARN=		1;
+$CRITICAL=	2;
+$UNKNOWN=	3;
+
+
+
+
+
+sub get_options {
+   #
+   # this gets the command line parameters provided by the users
+   #
+   print "Running get_options subroutine \n" if ($verbose eq "yes");
+   Getopt::Long::Configure('bundling');
+   GetOptions(
+      "h"   => \$opt_h, "help"    => \$opt_h,
+      "v"   => \$opt_v, "verbose" => \$opt_v,
+      "w=i" => \$opt_w, "warn=i"  => \$opt_w,  "warning=i"  => \$opt_w,
+      "c=i" => \$opt_c, "crit=i"  => \$opt_c,  "critical=i" => \$opt_c,
+   );
+   #
+   # If the user supplied the -h or --help switch, give them some help.
+   #
+   if( defined( $opt_h ) ) {
+      print "Use this syntax \n";
+      print "   $0 \n";
+      print "   $0 --verbose     (increase output for debugging \n";
+      print "   $0 --warn=#      (# of days to warn     before subscription expiry \n";
+      print "   $0 --crit=#      (# of days to critical before subscription expiry \n";
+      exit $CRITICAL;				#exit script
+   }
+   #
+   # If the user supplied the --verbose switch, increase output verbosity
+   #
+   if( defined( $opt_v ) ) {
+      $verbose = "yes";
+   } else {
+      $verbose = "no";
+   }
+   #
+   # If the user provided -w or --warn or --warning parameter, use that value as the number of days to warn on
+   #
+   if( defined( $opt_w ) ) {
+      $days_warn = $opt_w;
+      print "   setting warning threshold to $days_warn days \n" if ($verbose eq "yes");
+   }
+   #
+   # If the user provided -c or --crit or --critical parameter, use that value as the number of days to warn on
+   #
+   if( defined( $opt_c ) ) {
+      $days_crit = $opt_c;
+      print "   setting critical threshold to $days_crit days \n" if ($verbose eq "yes");
+   }
+
+}                       #end of subroutine
+
+
+
+
+
+sub sanity_checks {
+   #
+   print "Running sanity_checks subroutine \n" if ($verbose eq "yes");
+   #
+   # confirm /usr/sbin/subscription-manager file exists 
+   if ( ! -e $subscriptionmanager ) {
+      print "ERROR: Cannot find $subscriptionmanager \n";
+      exit $CRITICAL;
+   }
+}						#end of subroutine
+
+
+
+
+sub check_for_output_file {
+   #
+   # a cron job may have already created the output file that we need
+   #
+   print "running check_for_output_file subroutine \n" if ($verbose eq "yes");
+   #
+   $output_filename = "/tmp/nagios.check_rhel_subscription.tmp";
+   #
+   # delete the output file if it is more than 24 hours (86400 seconds) old (this will work when run via root user but not when run as nagios user due to permissions)
+   if ( -e "$output_filename" )  {             				#see if a cron job has already provided the info we need
+      ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($output_filename); #get last modification time in seconds since the epoch
+      $output_file_age = time - $mtime;                                 #figure out how many seconds old the file is
+      print "   output file $output_filename is $output_file_age seconds old \n" if ($verbose eq "yes");
+      if ( $output_file_age >= 86400 ) {                                  #see if the file is more than 240 seconds old
+         if ( -w $output_filename )  {             			#file is writable if this script executed by root, but read-only when executed via nagios	
+            print "   deleting old copy of $output_filename \n" if ($verbose eq "yes");
+            unlink "$output_filename";                                  #delete the file if it is too old
+         }
+      }
+      if ( (-e "$output_filename") && ($output_file_age >= 86400) ) {        #raise an alert if the file is more than 86400 seconds old
+         print "$CHECK_NAME WARN - temporary file $output_filename not being automatically created via cron.  Please investigate. \n";
+         exit $WARN;                                                    #exit script
+      }									#end of if block
+   }                                                                    #end of if block
+   #
+   if ( -e "$output_filename" ) {   		            		#see if a cron job has already provided the info we need
+      open (OUT,"$output_filename") or die "Cannot open $output_filename for reading $! \n";
+      while (<OUT>) {                                                   #read a line from the text file
+         $output_message = $_  if ( $_ =~ /[a-zA-Z]/);                  #get the content of the output file into a variable
+         print "   output message is $output_message \n" if ($verbose eq "yes");
+      }                                                                 #end of while loop
+      close OUT;                                                        #close filehandle
+      print $output_message;                                            #print the content of the output file
+      exit $CRITICAL if ( $output_message =~ /CRITICAL/ );              #exit script with appropriate return code
+      exit $WARN     if ( $output_message =~ /WARN/ );                  #exit script with appropriate return code
+      exit $UNKNOWN  if ( $output_message =~ /UNKNOWN/ );               #exit script with appropriate return code
+      exit $OK       if ( $output_message =~ /OK/ );                    #exit script with appropriate return code
+   }                                                                    #end of if block
+}                                                                       #end of subroutine
+
+
+
+
+
+
+sub print_to_outputfile {
+   #
+   print "running print_to_outputfile \n" if ($verbose eq "yes");
+   #
+   # This subroutine is called whenever an output message is printed, to confirm that the $output_file exists
+   #
+   # confirm the output message exists
+   $output_message = "$CHECK_NAME UNKNOWN - could not parse response from remote host \n" unless ($output_message);
+   #
+   # confirm the $output_filename variable is defined
+   unless ($output_filename) {
+      print "$CHECK_NAME UNKNOWN - the \$output_filename variable is not defined.  This might be a script bug. \n";
+      exit $UNKNOWN;                                                            #only get this far if OK/WARN/CRITICAL/UNKNOWN was not found in the output file
+   }                                                                            #end of unless block
+   #
+   if ( ! -e "$output_filename" ) {                                                     #only run this section if $output_filename does not already exist
+      print "   $output_filename not found - writing output message to $output_filename \n" if ($verbose eq "yes");
+      open (OUT,">$output_filename") or die "Cannot open $output_filename for writing: $! \n";
+      print OUT "$output_message";
+      close OUT;                                                                #close filehandle
+      chmod 0644, "$output_filename";                                           #set the file permission to -rw-r--r-- to ensure nagios user can read file
+   }                                                                            #end of if block
+}                                                                               #end of subroutine
+
+
+
+
+
+sub get_subscription_status {
+   #
+   print "running get_subscription_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Output of command will be similar to:
+   #  /usr/sbin/subscription-manager list --matches=479
+   #  +-------------------------------------------+
+   #    Installed Product Status
+   #  +-------------------------------------------+
+   #  Product Name:   Red Hat Enterprise Linux for x86_64
+   #  Product ID:     479
+   #  Version:        8.4
+   #  Arch:           x86_64
+   #  Status:         Subscribed
+   #  Status Details:
+   #  Starts:         06/30/2020
+   #  Ends:           06/30/2021
+   #
+   #
+   #
+   $cmd = "$subscriptionmanager list --matches=$product_id";  
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd 2>&1|");	#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      if ( /Status: +([a-zA-Z0-9]+)/ ) {
+         $rhelsub{Status} = $1;					#assign value to hash
+      }
+      if ( /Ends: +([0-9]{2})\/([0-9]{2})\/([0-9]{4})/ ) {	#look for local-dependent mm/dd/yyyy format
+         $mon   = $1;						#assign value to variable
+         $mday  = $2;						#assign value to variable
+         $year  = $3;						#assign value to variable
+         $rhelsub{Ends} = "$mon\/$mday\/$year";			#put mm/dd/yyyy into hash as human readable output
+      }
+      if ( /Ends: +([0-9]{4})\-([0-9]{2})\-([0-9]{2})/ ) {	#look for locale-dependent yyyy-mm-dd format
+         $mon   = $2;						#assign value to variable
+         $mday  = $3;						#assign value to variable
+         $year  = $1;						#assign value to variable
+         $rhelsub{Ends} = "$year-$mon\/$mday";			#put yyy-mm-dd into hash as human readable output
+      }
+   }								#end of while loop
+   close IN;							#close filehandle
+   #
+   # 
+   # figure out how many days until subscription expires
+   # convert the yyyy-mm-dd date in the subscription expiry to seconds since the epoch  (decrement $mon by 1 and decrement $year by 1900)
+   $sec=0; $min=0; $hour=0;	#ignore seconds/minutes/hours, granularity to a single day is fine
+   $epoch_seconds_timestamp = timelocal( $sec, $min, $hour, $mday, $mon-1, $year-1900);		#use Time::Local module to convert yyyy-mm-dd hh:mm:ss to epoch
+   $epoch_seconds_now = time;								#seconds since epoch
+   print "current seconds since epoch is $epoch_seconds_now \n" if ($verbose eq "yes");
+   print "subscription expiry is $year-$mon-$mday $hour:$min:$sec is $epoch_seconds_timestamp seconds since epoch \n" if ($verbose eq "yes");
+   $datecalc =  $epoch_seconds_timestamp-$epoch_seconds_now ;
+   print "epoch_seconds_timestamp-epoch_seconds_now = $epoch_seconds_timestamp-$epoch_seconds_now = $datecalc seconds from now \n" if ($verbose eq "yes");
+   $datecalc = $datecalc / 86400;				#convert seconds to days
+   $datecalc = sprintf("%.0f",$datecalc);			#truncate to 0 decimal places, closest day is good enough
+   print "Subscription expires in $datecalc days \n" if ($verbose eq "yes");
+
+}                                               		#end of subroutine
+
+
+
+
+
+
+
+
+sub print_output {
+   #
+   print "Running print_output subroutine \n" if ($verbose eq "yes");
+   #
+   $common_output_data = "";
+   $perf_data = "";
+   #
+   #
+   if ( $datecalc < 0 ) {
+      $output_message = "$CHECK_NAME CRITICAL - RHEL subscription expired  $common_output_data | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $CRITICAL;
+   }
+   if ( $datecalc < 30 ) {
+      $output_message = "$CHECK_NAME WARN - RHEL subscription will be expiring on $rhelsub{Ends}, please renew subscription.  $common_output_data | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $WARN;
+   }
+   # should only get here if everything is ok
+   if ( $datecalc >= 30 ) {
+      $output_message = "$CHECK_NAME OK - RHEL subscription will expire on $rhelsub{Ends}  $common_output_data | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $OK;
+   }
+}			#end of subroutine
+
+
+
+
+# ---------------- main body of script -------------------------
+get_options;
+sanity_checks;
+check_for_output_file;
+get_subscription_status;
+print_output;
+
+
+
+
+
+
