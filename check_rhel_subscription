@@ -9,7 +9,8 @@
 #  2021-05-30	njeffrey	Script created
 #  2021-07-26	njeffrey	Update get_subscription_status subroutine to detect "Not Subscribed"
 #  2021-11-23	njeffrey	Confirm perimeter firewall allows connectivity to https://subscription.rhsm.redhat.com
-#
+#  2022-03-25	njeffrey	Skip expiration date calculations if perimeter firewall does not allow connections to https://subscription.rhsm.redhat.com:443
+#  2022-03-25	njeffrey	Add get_overall_status subroutine
 
 
 
@@ -293,6 +294,44 @@ sub check_internet_access {
 
 
 
+
+sub check_overall_status {
+   #
+   print "running check_overall_status subroutine \n" if ($verbose eq "yes");
+   #
+   # Output of command will be similar to the following for a machine with a valid subscription:
+   #  /usr/sbin/subscription-manager status
+   #     +---------------------+
+   #      System Status Details
+   #     +---------------------+
+   #     Overall Status: Current           <----- this is the line we are looking for
+   #     System Purpose Status: Unknown
+   #
+   # Output of command will be similar to the following for a machine withOUT a valid subscription:
+   #  /usr/sbin/subscription-manager status
+   #     +---------------------+
+   #      System Status Details
+   #     +---------------------+
+   #     Overall Status: Unknown        <----- this is the line we are looking for
+   #     System Purpose Status: Unknown
+   #
+   $rhelsub{OverallStatus} = "unknown";				#initialize hash element to avoid undef errors
+   #
+   $cmd = "$subscriptionmanager status";  
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open (IN,"$cmd 2>&1|");	#open filehandle
+   while (<IN>) {						#read a line from the filehandle
+      if ( /Overall Status: Current/ ) {
+         $rhelsub{OverallStatus} = "Current";			#assign value to hash
+      }
+      if ( /Overall Status: Unknown/ ) {
+         $rhelsub{OverallStatus} = "unknown";			#assign value to hash
+      }
+   }								#end of while loop
+   close IN;							#close filehandle
+}                                               		#end of subroutine
+
+
 sub get_subscription_status {
    #
    print "running get_subscription_status subroutine \n" if ($verbose eq "yes");
@@ -382,7 +421,19 @@ sub print_output {
    $common_output_data = "";
    $perf_data = "";
    #
+   if ( ($rhelsub{internet_access} ne "open" ) && ($rhelsub{OverallStatus} eq "Current") ) {
+      $output_message = "$CHECK_NAME OK - RHEL subscription status is currently active, but the expiration date cannot be determined because the perimeter firewall is not allowing connections to https://subscription.rhm.redhat.com:443 .   $common_output_data | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $UNKNOWN;
+   }
    #
+   if ( ($rhelsub{internet_access} ne "open" ) && ($rhelsub{OverallStatus} ne "Current") ) {
+      $output_message = "$CHECK_NAME UNKNOWN - could not determine RHEL subscription status, and perimeter firewall is not allowing connections to https://subscription.rhm.redhat.com:443 .   $common_output_data | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $UNKNOWN;
+   }
    if ( $rhelsub{internet_access} eq "unknown" ) {
       $output_message = "$CHECK_NAME UNKNOWN - could not determine if internet access was available.  Please troubleshoot with: nmap -Pn -p 443 subscription.rhm.redhat.com  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
@@ -406,6 +457,13 @@ sub print_output {
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $UNKNOWN;
+   }
+   #
+   if ( ($rhelsub{OverallStatus} ne "Current") && ($rhelsub{Status} ne "Subscribed") ) {
+      $output_message = "$CHECK_NAME CRITICAL - RHEL subscription status could not be determined.  Please add a subscription with subscription-manager  $common_output_data | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $CRITICAL;
    }
    #
    if ( $rhelsub{Status} eq "Not Subscribed" ) {
@@ -442,6 +500,7 @@ sub print_output {
 get_options;
 sanity_checks;
 check_for_output_file;
+check_overall_status;
 check_internet_access;
 get_subscription_status;
 print_output;
