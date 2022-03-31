@@ -11,6 +11,7 @@
 #  2021-11-23	njeffrey	Confirm perimeter firewall allows connectivity to https://subscription.rhsm.redhat.com
 #  2022-03-25	njeffrey	Skip expiration date calculations if perimeter firewall does not allow connections to https://subscription.rhsm.redhat.com:443
 #  2022-03-25	njeffrey	Add get_overall_status subroutine
+#  2022-03-30	njeffrey	Remove nmap -p 443 subscription.rhsm.redhat.com (because nmap cannot use any proxy server defined in /etc/yum.conf)
 
 
 
@@ -31,7 +32,7 @@
 #  If you hare using the check_by_ssh method, you will need a section in the services.cfg
 #  file on the nagios server that looks similar to the following.
 #  This assumes that you already have ssh key pairs configured.
-#  # Define service for checking time synchronization 
+#  # Define service for checking RHEL subscription status
 #  define service{
 #     use                             generic-service
 #     hostgroup_name                  all_rhel
@@ -249,52 +250,6 @@ sub print_to_outputfile {
 
 
 
-sub check_internet_access {
-   #
-   print "Running check_internet_access subroutine \n" if ($verbose eq "yes");
-   #
-   #
-   #
-   # confirm connectivity to https://subscription.rhsm.redhat.com:443
-   # Successful connection should look similar to:
-   #    $ nmap -Pn -p 443 subscription.rhsm.redhat.com
-   #    Starting Nmap 6.40 ( http://nmap.org ) at 2021-11-23 13:56 MST
-   #    Nmap scan report for subscription.rhsm.redhat.com (209.132.183.108)
-   #    Host is up (0.074s latency).
-   #    PORT    STATE SERVICE
-   #    443/tcp open  https      <--- state should be "open".  If "filtered" or "closed", perimeter firewall may be blocking
-   #    Nmap done: 1 IP address (1 host up) scanned in 0.11 seconds
-   # If name resolution is broken, output will look similar to:
-   #    $ nmap -Pn -p 443 subscription.rhsm.redhat.com
-   #    Failed to resolve "subscription.rhsm.redhat.com".
-   #    WARNING: No targets were specified, so 0 hosts scanned.
-   #    Nmap done: 0 IP addresses (0 hosts up) scanned in 0.09 seconds
-   #
-   #
-   $rhelsub{internet_access} = "unknown";			#initialize hash element
-   $cmd = "$nmap -Pn -p 443 subscription.rhsm.redhat.com";  
-   print "   running command: $cmd \n" if ($verbose eq "yes");
-   open (IN,"$cmd 2>&1|");	#open filehandle
-   while (<IN>) {						#read a line from the filehandle
-      if ( /Failed to resolve/ ) {				#broken name resolution
-         $rhelsub{internet_access} = "BadNameResolution";
-      }
-      if ( /^443\/tcp open/ ) {					#state will be "open" if we have working connectivity
-         $rhelsub{internet_access} = "open";
-      }
-      if ( /^443\/tcp filtered/ ) {				#state will be "filtered" if blocked by firewall
-         $rhelsub{internet_access} = "filtered";
-      }
-      if ( /^443\/tcp closed/ ) {				#state will be "closed if remote host does not respond
-         $rhelsub{internet_access} = "closed";
-      }
-   }								#end of while loop
-   close IN;							#close filehandle
-}								#end of subroutine
-
-
-
-
 sub check_overall_status {
    #
    print "running check_overall_status subroutine \n" if ($verbose eq "yes");
@@ -332,6 +287,7 @@ sub check_overall_status {
 }                                               		#end of subroutine
 
 
+
 sub get_subscription_status {
    #
    print "running get_subscription_status subroutine \n" if ($verbose eq "yes");
@@ -365,8 +321,6 @@ sub get_subscription_status {
    # Ends:
    #
    $rhelsub{Status} = "unknown";				#initialize hash element to avoid undef errors
-   #
-   return unless ($rhelsub{internet_access} eq "open");		#break out of this subroutine if we do not have internet access
    #
    $cmd = "$subscriptionmanager list --matches=$product_id";  
    print "   running command: $cmd \n" if ($verbose eq "yes");
@@ -421,39 +375,15 @@ sub print_output {
    $common_output_data = "";
    $perf_data = "";
    #
-   if ( ($rhelsub{internet_access} ne "open" ) && ($rhelsub{OverallStatus} eq "Current") ) {
-      $output_message = "$CHECK_NAME OK - RHEL subscription status is currently active, but the expiration date cannot be determined because the perimeter firewall is not allowing connections to https://subscription.rhm.redhat.com:443 .   $common_output_data | $perf_data \n";
+   if ( ($rhelsub{OverallStatus} eq "Current" ) && ($rhelsub{Status} eq "unknown") ) {
+      $output_message = "$CHECK_NAME OK - RHEL subscription status is currently active, but the expiration date cannot be determined because the $subscriptionmanager command could not establish a connection to https://subscription.rhm.redhat.com:443 . Please check /etc/yum.conf to see if a proxy server is required for Internet access.   $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $UNKNOWN;
    }
    #
-   if ( ($rhelsub{internet_access} ne "open" ) && ($rhelsub{OverallStatus} ne "Current") ) {
-      $output_message = "$CHECK_NAME UNKNOWN - could not determine RHEL subscription status, and perimeter firewall is not allowing connections to https://subscription.rhm.redhat.com:443 .   $common_output_data | $perf_data \n";
-      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
-      print $output_message;
-      exit $UNKNOWN;
-   }
-   if ( $rhelsub{internet_access} eq "unknown" ) {
-      $output_message = "$CHECK_NAME UNKNOWN - could not determine if internet access was available.  Please troubleshoot with: nmap -Pn -p 443 subscription.rhm.redhat.com  $common_output_data | $perf_data \n";
-      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
-      print $output_message;
-      exit $UNKNOWN;
-   }
    if ( $rhelsub{internet_access} eq "BadNameResolution" ) {
       $output_message = "$CHECK_NAME UNKNOWN - Cannot resolve hostname subscription.rhsm.redhat.com.  Please check DNS to confirm working name resolution.  $common_output_data | $perf_data \n";
-      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
-      print $output_message;
-      exit $UNKNOWN;
-   }
-   if ( $rhelsub{internet_access} eq "filtered" ) {
-      $output_message = "$CHECK_NAME UNKNOWN - Cannot connect to https://subscription.rhsm.redhat.com:443 to verify RHEL subscription status.  Please confirm perimeter firewall allows this outgoing connection.  $common_output_data | $perf_data \n";
-      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
-      print $output_message;
-      exit $UNKNOWN;
-   }
-   if ( $rhelsub{internet_access} eq "closed" ) {
-      $output_message = "$CHECK_NAME UNKNOWN - Cannot connect to https://subscription.rhsm.redhat.com:443 to verify RHEL subscription status.  Remote host might be down or blocked by perimeter firewall, or proxy configuration may be incorrect.  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $UNKNOWN;
@@ -501,7 +431,6 @@ get_options;
 sanity_checks;
 check_for_output_file;
 check_overall_status;
-check_internet_access;
 get_subscription_status;
 print_output;
 
