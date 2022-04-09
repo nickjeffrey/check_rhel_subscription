@@ -11,12 +11,12 @@ Internet access from RHEL host to query Red Hat subscription servers
 # Configuration
 
 The subscription-manager command requires root privileges to run.
-Rather than give the nagios user and additional privileges, this script will run from the root crontab every 12 hours,
+Rather than give the nagios user and additional privileges, this script will run hourly from the root crontab,
 generating a /tmp/nagios.check_rhel_subscription.tmp file.  This file will be read by the low-privileged nagios user
 when the check is run from nagios.
 Create a crontab entry for the root user similar to:
 ```
-    59 11,23 * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
+    59 * * * * /usr/local/nagios/libexec/check_rhel_subscription   >/dev/null 2>&1 #nagios helper script
 ```
 
 This script is executed remotely on a monitored system by the NRPE or check_by_ssh methods available in nagios.  
@@ -28,7 +28,7 @@ This assumes you already have ssh key pairs configured.
        use                             generic-service
        hostgroup_name                  all_rhel
        service_description             RHEL subscription
-       check_interval                  7200     ; only check every 12 hours
+       check_interval                  14400     ; only check every 1440 minutes (24 hours)
        check_command                   check_by_ssh!/usr/local/nagios/libexec/check_rhel_subscription
        }
 ```
@@ -40,9 +40,9 @@ This assumes you already have ssh key pairs configured.
       use                             generic-service
       hostgroup_name                  all_rhel
       service_description             RHEL subscription
+      check_interval                  14400     ; only check every 1440 minutes (24 hours)
       check_command                   check_nrpe!check_rhel_subscription -t 30
-      normal_check_interval           7200     ; only check every 12 hours
-      }
+            }
 ```
 
 If you are using the NRPE method, you will also need a command definition similar to the following on each monitored host in the /usr/local/nagios/nrpe/nrpe.cfg file:
