@@ -12,6 +12,7 @@
 #  2022-03-25	njeffrey	Skip expiration date calculations if perimeter firewall does not allow connections to https://subscription.rhsm.redhat.com:443
 #  2022-03-25	njeffrey	Add get_overall_status subroutine
 #  2022-03-30	njeffrey	Remove nmap -p 443 subscription.rhsm.redhat.com (because nmap cannot use any proxy server defined in /etc/yum.conf)
+#  2022-04-09	njeffrey	Documentation updates
 
 
 
@@ -24,7 +25,7 @@
 # CONFIGURATION
 # -------------
 #  Create a crontab entry for the root user similar to:
-#  59 11,23 * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
+#  59 * * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
 #
 #  This script is executed remotely on a monitored system by the NRPE or check_by_ssh
 #  methods available in nagios.  
@@ -37,7 +38,7 @@
 #     use                             generic-service
 #     hostgroup_name                  all_rhel
 #     service_description             RHEL subscription
-#     check_interval                  7200     ; only check every 12 hours
+#     check_interval                  1440     ; only check every 1440 minutes (24 hours)
 #     check_command                   check_by_ssh!/usr/local/nagios/libexec/check_rhel_subscription
 #     }
 #
@@ -48,7 +49,7 @@
 #     hostgroup_name                  all_rhel
 #     service_description             RHEL subscription
 #     check_command                   check_nrpe!check_rhel_subscription
-#     normal_check_interval           7200     ; only check every 12 hours
+#     check_interval           	      1440     ; only check every 1440 minutes (24 hours)
 #     }
 #
 #  If you are using the NRPE method, you will also need a command definition similar to the following on each monitored host
@@ -63,11 +64,11 @@
 #
 #   This script requires root privileges to run the subscription-manager command
 #
-#   Rather than give the nagios user and additional privileges, this script will run from the root crontab every 12 hours,
-#   generating a /tmp/nagios.check_rhel_subscription.tmp file.  This file will be read by the low-privileged nagios user
-#   when the check is run from nagios.
+#   Rather than give the nagios user and additional privileges, this script will run hourly from the root crontab,
+#   generating a /tmp/nagios.check_rhel_subscription.tmp file.  
+#   This file will be read by the low-privileged nagios user when the check is run from nagios.
 #   Ensure the root crontab has an entry similar to the following:
-#   59 11,23 * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
+#   59 * * * * /usr/local/nagios/libexec/check_rhel_subscription   #nagios helper script
 
 
 
@@ -78,7 +79,7 @@ use Time::Local;					#perform date/time calculations   yum install perl-Time-Loc
 
 
 # Declare variables
-my ($product_id,$days_warn,$days_crit,$subscriptionmanager,$nmap,$cmd,%rhelsub);
+my ($product_id,$days_warn,$days_crit,$subscriptionmanager,$cmd,%rhelsub);
 my ($sec, $min, $hour, $mday, $mon, $year);
 my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
 my ($epoch_seconds_timestamp,$epoch_seconds_now);
@@ -89,7 +90,6 @@ $product_id = 479;						# Product ID 479 is RHEL
 $days_warn  = 30;						# default value, can be overridden with --warn=#
 $days_crit  = 15;						# default value, can be overridden with --crit=#
 $subscriptionmanager = "/usr/bin/subscription-manager";		#location of binary
-$nmap = "/usr/bin/nmap";					#location of binary
 $verbose = "no";						#yes|no flag to increase verbosity for debugging
 $CHECK_NAME = "RHEL subscription";
 #
@@ -188,22 +188,32 @@ sub check_for_output_file {
    #
    $output_filename = "/tmp/nagios.check_rhel_subscription.tmp";
    #
-   # delete the output file if it is more than 24 hours (86400 seconds) old (this will work when run via root user but not when run as nagios user due to permissions)
+   #
    if ( -e "$output_filename" )  {             				#see if a cron job has already provided the info we need
       ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks) = stat($output_filename); #get last modification time in seconds since the epoch
       $output_file_age = time - $mtime;                                 #figure out how many seconds old the file is
       print "   output file $output_filename is $output_file_age seconds old \n" if ($verbose eq "yes");
-      if ( $output_file_age >= 86400 ) {                                  #see if the file is more than 240 seconds old
-         if ( -w $output_filename )  {             			#file is writable if this script executed by root, but read-only when executed via nagios	
-            print "   deleting old copy of $output_filename \n" if ($verbose eq "yes");
-            unlink "$output_filename";                                  #delete the file if it is too old
-         }
+      #
+      # Delete the output file if it is more than 1440 seconds (4 hours) old.
+      # This section only runs when executed from the root crontab, because 
+      # write permissions to the output file are required.
+      #
+      if ( (-w $output_filename) && ($output_file_age >= 1440) ) {     	#see if the file is writable and more than 1440 seconds (4 hours) old
+         print "   deleting old copy of $output_filename \n" if ($verbose eq "yes");
+         unlink "$output_filename";                                  	#delete the file, which causes the rest of the script to run
       }
-      if ( (-e "$output_filename") && ($output_file_age >= 86400) ) {        #raise an alert if the file is more than 86400 seconds old
+      #
+      # This section runs if the temporary file is too old, 
+      # which usually means the root crontab is not running this script.
+      #
+      if ( (-e "$output_filename") && ($output_file_age >= 86400) ) {   #raise an alert if the file is more than 86400 seconds (24 hours) old
          print "$CHECK_NAME WARN - temporary file $output_filename not being automatically created via cron.  Please investigate. \n";
          exit $WARN;                                                    #exit script
       }									#end of if block
    }                                                                    #end of if block
+   #
+   # This section runs when the temporary file exists and is not too old.
+   # The expectation is that this section is run by the low-privilege nagios user.
    #
    if ( -e "$output_filename" ) {   		            		#see if a cron job has already provided the info we need
       open (OUT,"$output_filename") or die "Cannot open $output_filename for reading $! \n";
@@ -250,6 +260,7 @@ sub print_to_outputfile {
 
 
 
+
 sub check_overall_status {
    #
    print "running check_overall_status subroutine \n" if ($verbose eq "yes");
@@ -285,6 +296,7 @@ sub check_overall_status {
    }								#end of while loop
    close IN;							#close filehandle
 }                                               		#end of subroutine
+
 
 
 
@@ -326,31 +338,32 @@ sub get_subscription_status {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open (IN,"$cmd 2>&1|");	#open filehandle
    while (<IN>) {						#read a line from the filehandle
-      if ( /Status: +([a-zA-Z0-9 ]+)/ ) {
+      if ( /Status: +([a-zA-Z0-9 ]+)/ ) {			#parse out Status line from command output
          $rhelsub{Status} = $1;					#assign value to hash
-      }
+      }								#end of if block
       if ( /Ends: +([0-9]{2})\/([0-9]{2})\/([0-9]{4})/ ) {	#look for local-dependent mm/dd/yyyy format
          $mon   = $1;						#assign value to variable
          $mday  = $2;						#assign value to variable
          $year  = $3;						#assign value to variable
          $rhelsub{Ends} = "$mon\/$mday\/$year";			#put mm/dd/yyyy into hash as human readable output
-      }
+      }								#end of if block
       if ( /Ends: +([0-9]{4})\-([0-9]{2})\-([0-9]{2})/ ) {	#look for locale-dependent yyyy-mm-dd format
          $mon   = $2;						#assign value to variable
          $mday  = $3;						#assign value to variable
          $year  = $1;						#assign value to variable
          $rhelsub{Ends} = "$year-$mon\/$mday";			#put yyy-mm-dd into hash as human readable output
-      }
+      }								#end of if block
    }								#end of while loop
    close IN;							#close filehandle
    #
-   # 
    if ( $rhelsub{Status} eq "Subscribed" ) {
-      # figure out how many days until subscription expires
+      # 
+      # This section will figure out how many days until subscription expires
       # convert the yyyy-mm-dd date in the subscription expiry to seconds since the epoch  (decrement $mon by 1 and decrement $year by 1900)
-      $sec=0; $min=0; $hour=0;	#ignore seconds/minutes/hours, granularity to a single day is fine
+      # 
+      $sec=0; $min=0; $hour=0;					#ignore seconds/minutes/hours, granularity to a single day is fine
       $epoch_seconds_timestamp = timelocal( $sec, $min, $hour, $mday, $mon-1, $year-1900);		#use Time::Local module to convert yyyy-mm-dd hh:mm:ss to epoch
-      $epoch_seconds_now = time;								#seconds since epoch
+      $epoch_seconds_now = time;				#seconds since epoch
       print "current seconds since epoch is $epoch_seconds_now \n" if ($verbose eq "yes");
       print "subscription expiry is $year-$mon-$mday $hour:$min:$sec is $epoch_seconds_timestamp seconds since epoch \n" if ($verbose eq "yes");
       $datecalc =  $epoch_seconds_timestamp-$epoch_seconds_now ;
@@ -377,13 +390,6 @@ sub print_output {
    #
    if ( ($rhelsub{OverallStatus} eq "Current" ) && ($rhelsub{Status} eq "unknown") ) {
       $output_message = "$CHECK_NAME OK - RHEL subscription status is currently active, but the expiration date cannot be determined because the $subscriptionmanager command could not establish a connection to https://subscription.rhm.redhat.com:443 . Please check /etc/yum.conf to see if a proxy server is required for Internet access.   $common_output_data | $perf_data \n";
-      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
-      print $output_message;
-      exit $UNKNOWN;
-   }
-   #
-   if ( $rhelsub{internet_access} eq "BadNameResolution" ) {
-      $output_message = "$CHECK_NAME UNKNOWN - Cannot resolve hostname subscription.rhsm.redhat.com.  Please check DNS to confirm working name resolution.  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $UNKNOWN;
