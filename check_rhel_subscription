@@ -13,6 +13,7 @@
 #  2022-03-25	njeffrey	Add get_overall_status subroutine
 #  2022-03-30	njeffrey	Remove nmap -p 443 subscription.rhsm.redhat.com (because nmap cannot use any proxy server defined in /etc/yum.conf)
 #  2022-04-09	njeffrey	Documentation updates
+#  2022-05-12	njeffrey	Add nagios performance data to output
 
 
 
@@ -83,7 +84,7 @@ my ($product_id,$days_warn,$days_crit,$subscriptionmanager,$cmd,%rhelsub);
 my ($sec, $min, $hour, $mday, $mon, $year);
 my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
 my ($epoch_seconds_timestamp,$epoch_seconds_now);
-my ($output_filename,$output_file_age,$output_message,$common_output_data,$perf_data,$verbose,$datecalc);
+my ($output_filename,$output_file_age,$output_message,$common_output_data,$perf_data,$verbose,$days_until_expiry);
 my ($opt_h,$opt_v,$opt_w,$opt_c);
 my ($OK,$WARN,$CRITICAL,$UNKNOWN,$CHECK_NAME);
 $product_id = 479;						# Product ID 479 is RHEL
@@ -366,11 +367,11 @@ sub get_subscription_status {
       $epoch_seconds_now = time;				#seconds since epoch
       print "current seconds since epoch is $epoch_seconds_now \n" if ($verbose eq "yes");
       print "subscription expiry is $year-$mon-$mday $hour:$min:$sec is $epoch_seconds_timestamp seconds since epoch \n" if ($verbose eq "yes");
-      $datecalc =  $epoch_seconds_timestamp-$epoch_seconds_now ;
-      print "epoch_seconds_timestamp-epoch_seconds_now = $epoch_seconds_timestamp-$epoch_seconds_now = $datecalc seconds from now \n" if ($verbose eq "yes");
-      $datecalc = $datecalc / 86400;				#convert seconds to days
-      $datecalc = sprintf("%.0f",$datecalc);			#truncate to 0 decimal places, closest day is good enough
-      print "Subscription expires in $datecalc days \n" if ($verbose eq "yes");
+      $days_until_expiry =  $epoch_seconds_timestamp-$epoch_seconds_now ;
+      print "epoch_seconds_timestamp-epoch_seconds_now = $epoch_seconds_timestamp-$epoch_seconds_now = $days_until_expiry seconds from now \n" if ($verbose eq "yes");
+      $days_until_expiry = $days_until_expiry / 86400;				#convert seconds to days
+      $days_until_expiry = sprintf("%.0f",$days_until_expiry);			#truncate to 0 decimal places, closest day is good enough
+      print "Subscription expires in $days_until_expiry days \n" if ($verbose eq "yes");
    }								#end of if block
 }                                               		#end of subroutine
 
@@ -386,7 +387,7 @@ sub print_output {
    print "Running print_output subroutine \n" if ($verbose eq "yes");
    #
    $common_output_data = "";
-   $perf_data = "";
+   $perf_data = "days_until_expiry=$days_until_expiry;;;;";
    #
    if ( ($rhelsub{OverallStatus} eq "Current" ) && ($rhelsub{Status} eq "unknown") ) {
       $output_message = "$CHECK_NAME OK - RHEL subscription status is currently active, but the expiration date cannot be determined because the $subscriptionmanager command could not establish a connection to https://subscription.rhm.redhat.com:443 . Please check /etc/yum.conf to see if a proxy server is required for Internet access.   $common_output_data | $perf_data \n";
@@ -408,20 +409,20 @@ sub print_output {
       print $output_message;
       exit $CRITICAL;
    }
-   if ( $datecalc < 0 ) {
+   if ( $days_until_expiry < 0 ) {
       $output_message = "$CHECK_NAME CRITICAL - RHEL subscription expired  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $CRITICAL;
    }
-   if ( $datecalc < 30 ) {
+   if ( $days_until_expiry < 30 ) {
       $output_message = "$CHECK_NAME WARN - RHEL subscription will be expiring on $rhelsub{Ends}, please renew subscription.  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $WARN;
    }
    # should only get here if everything is ok
-   if ( $datecalc >= 30 ) {
+   if ( $days_until_expiry >= 30 ) {
       $output_message = "$CHECK_NAME OK - RHEL subscription will expire on $rhelsub{Ends}  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
