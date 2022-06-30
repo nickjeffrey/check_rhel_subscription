@@ -14,6 +14,8 @@
 #  2022-03-30	njeffrey	Remove nmap -p 443 subscription.rhsm.redhat.com (because nmap cannot use any proxy server defined in /etc/yum.conf)
 #  2022-04-09	njeffrey	Documentation updates
 #  2022-05-12	njeffrey	Add nagios performance data to output
+#  2022-06-30	njeffrey	Add detection for status=Invalid for an expired subscription
+#  2022-06-30	njeffrey	Change warning period from 30 days to 7 days
 
 
 
@@ -74,9 +76,9 @@
 
 
 
-use strict;						#enforce good coding practices
-use Getopt::Long;                       		#allow --long-switches to be used as parameters
-use Time::Local;					#perform date/time calculations   yum install perl-Time-Local
+use strict;							#enforce good coding practices
+use Getopt::Long;                      		 		#allow --long-switches to be used as parameters
+use Time::Local;						#perform date/time calculations   yum install perl-Time-Local
 
 
 # Declare variables
@@ -87,9 +89,10 @@ my ($epoch_seconds_timestamp,$epoch_seconds_now);
 my ($output_filename,$output_file_age,$output_message,$common_output_data,$perf_data,$verbose,$days_until_expiry);
 my ($opt_h,$opt_v,$opt_w,$opt_c);
 my ($OK,$WARN,$CRITICAL,$UNKNOWN,$CHECK_NAME);
-$product_id = 479;						# Product ID 479 is RHEL
-$days_warn  = 30;						# default value, can be overridden with --warn=#
-$days_crit  = 15;						# default value, can be overridden with --crit=#
+$product_id          = 479;					#Product ID 479 is RHEL
+$days_warn           = 7;					#default value, can be overridden with --warn=#
+$days_crit           = 1;					#default value, can be overridden with --crit=#
+$days_until_expiry   = 0;					#initialize variable to avoid undef errors
 $subscriptionmanager = "/usr/bin/subscription-manager";		#location of binary
 $verbose = "no";						#yes|no flag to increase verbosity for debugging
 $CHECK_NAME = "RHEL subscription";
@@ -150,8 +153,7 @@ sub get_options {
       $days_crit = $opt_c;
       print "   setting critical threshold to $days_crit days \n" if ($verbose eq "yes");
    }
-
-}                       #end of subroutine
+}						                       #end of subroutine
 
 
 
@@ -172,7 +174,7 @@ sub sanity_checks {
       print "ERROR: Cannot find $subscriptionmanager \n";
       exit $CRITICAL;
    }
-}						#end of subroutine
+}									#end of subroutine
 
 
 
@@ -282,6 +284,19 @@ sub check_overall_status {
    #     Overall Status: Unknown        <----- this is the line we are looking for
    #     System Purpose Status: Unknown
    #
+   # Output of command will be similar to the following for a machine with an expired subscription:
+   #  /usr/sbin/subscription-manager status
+   #  +-------------------------------------------+
+   #     System Status Details
+   #     +-------------------------------------------+
+   #     Overall Status: Invalid
+   #
+   #     Red Hat Enterprise Linux for x86_64:
+   #     - Not supported by a valid subscription.
+   #
+   #     Red Hat CodeReady Linux Builder for x86_64:
+   #     - Not supported by a valid subscription.
+   #
    $rhelsub{OverallStatus} = "unknown";				#initialize hash element to avoid undef errors
    #
    $cmd = "$subscriptionmanager status";  
@@ -294,8 +309,12 @@ sub check_overall_status {
       if ( /Overall Status: Unknown/ ) {
          $rhelsub{OverallStatus} = "unknown";			#assign value to hash
       }
+      if ( /Overall Status: Invalid/ ) {
+         $rhelsub{OverallStatus} = "Invalid";			#assign value to hash
+      }
    }								#end of while loop
    close IN;							#close filehandle
+   print "   overall status is $rhelsub{OverallStatus} \n" if ($verbose eq "yes");
 }                                               		#end of subroutine
 
 
@@ -389,6 +408,12 @@ sub print_output {
    $common_output_data = "";
    $perf_data = "days_until_expiry=$days_until_expiry;;;;";
    #
+   if ( $rhelsub{OverallStatus} eq "Invalid"  ) {
+      $output_message = "$CHECK_NAME WARN - RHEL subscription status is expired.  Please add a subscription with: $subscriptionmanager register --auto-attach --username you\@example.com --password=YourPass | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $WARN;
+   }
    if ( ($rhelsub{OverallStatus} eq "Current" ) && ($rhelsub{Status} eq "unknown") ) {
       $output_message = "$CHECK_NAME OK - RHEL subscription status is currently active, but the expiration date cannot be determined because the $subscriptionmanager command could not establish a connection to https://subscription.rhm.redhat.com:443 . Please check /etc/yum.conf to see if a proxy server is required for Internet access.   $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
@@ -409,20 +434,20 @@ sub print_output {
       print $output_message;
       exit $CRITICAL;
    }
-   if ( $days_until_expiry < 0 ) {
+   if ( $days_until_expiry <= $days_crit ) {
       $output_message = "$CHECK_NAME CRITICAL - RHEL subscription expired  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $CRITICAL;
    }
-   if ( $days_until_expiry < 30 ) {
+   if ( $days_until_expiry < $days_warn ) {
       $output_message = "$CHECK_NAME WARN - RHEL subscription will be expiring on $rhelsub{Ends}, please renew subscription.  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $WARN;
    }
    # should only get here if everything is ok
-   if ( $days_until_expiry >= 30 ) {
+   if ( $days_until_expiry >= $days_warn ) {
       $output_message = "$CHECK_NAME OK - RHEL subscription will expire on $rhelsub{Ends}  $common_output_data | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
