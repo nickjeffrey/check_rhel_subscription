@@ -16,6 +16,7 @@
 #  2022-05-12	njeffrey	Add nagios performance data to output
 #  2022-06-30	njeffrey	Add detection for status=Invalid for an expired subscription
 #  2022-06-30	njeffrey	Change warning period from 30 days to 7 days
+#  2024-10-30	njeffrey	/usr/bin/subscription-manager version 1.24 and above will report Status:Disabled if Simple Content Access mode is enabled https://access.redhat.com/solutions/5060001
 
 
 
@@ -297,6 +298,17 @@ sub check_overall_status {
    #     Red Hat CodeReady Linux Builder for x86_64:
    #     - Not supported by a valid subscription.
    #
+   #
+   # Output of command with subscription-manager 1.24 of higher
+   # Refer to https://access.redhat.com/solutions/5060001
+   # +-------------------------------------------+
+   #    System Status Details
+   # +-------------------------------------------+
+   # Overall Status: Disabled                  <---- this is ok if Simple Content Access mode is enabled on the next line
+   # Content Access Mode is set to Simple Content Access. This host has access to content, regardless of subscription status.
+   # System Purpose Status: Disabled
+   #
+   #
    $rhelsub{OverallStatus} = "unknown";				#initialize hash element to avoid undef errors
    #
    $cmd = "$subscriptionmanager status";  
@@ -311,6 +323,9 @@ sub check_overall_status {
       }
       if ( /Overall Status: Invalid/ ) {
          $rhelsub{OverallStatus} = "Invalid";			#assign value to hash
+      }
+      if ( /Content Access Mode is set to Simple Content Access. This host has access to content, regardless of subscription status./ ) {
+         $rhelsub{OverallStatus} = "SimpleContentAccess";			#assign value to hash
       }
    }								#end of while loop
    close IN;							#close filehandle
@@ -408,6 +423,12 @@ sub print_output {
    $common_output_data = "";
    $perf_data = "days_until_expiry=$days_until_expiry;;;;";
    #
+   if ( $rhelsub{OverallStatus} eq "SimpleContentAccess"  ) {
+      $output_message = "$CHECK_NAME OK - RHEL subscription is using Simple Content Access mode | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $OK;
+   }
    if ( $rhelsub{OverallStatus} eq "Invalid"  ) {
       $output_message = "$CHECK_NAME WARN - RHEL subscription status is expired.  Please add a subscription with: $subscriptionmanager register --auto-attach --username you\@example.com --password=YourPass | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
