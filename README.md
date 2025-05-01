@@ -47,3 +47,8 @@ If you are using the NRPE method, you will also need a command definition simila
 ```
     command[check_rhel_subscription]=/usr/local/nagios/libexec/check_rhel_subscription
 ```
+
+# Sample output
+```
+RHEL subscription OK - RHEL subscription is using Simple Content Access mode | days_until_expiry=0;;;;
+```
