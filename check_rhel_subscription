@@ -17,6 +17,7 @@
 #  2022-06-30	njeffrey	Add detection for status=Invalid for an expired subscription
 #  2022-06-30	njeffrey	Change warning period from 30 days to 7 days
 #  2024-10-30	njeffrey	/usr/bin/subscription-manager version 1.24 and above will report Status:Disabled if Simple Content Access mode is enabled https://access.redhat.com/solutions/5060001
+#  2025-05-31	njeffrey	Regex bugfixes
 
 
 
