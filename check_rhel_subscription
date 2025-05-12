@@ -17,7 +17,7 @@
 #  2022-06-30	njeffrey	Add detection for status=Invalid for an expired subscription
 #  2022-06-30	njeffrey	Change warning period from 30 days to 7 days
 #  2024-10-30	njeffrey	/usr/bin/subscription-manager version 1.24 and above will report Status:Disabled if Simple Content Access mode is enabled https://access.redhat.com/solutions/5060001
-#  2025-05-31	njeffrey	Regex bugfixes
+#  2025-05-01	njeffrey	Regex bugfixes
 
 
 
@@ -206,6 +206,19 @@ sub check_for_output_file {
       if ( (-w $output_filename) && ($output_file_age >= 1440) ) {     	#see if the file is writable and more than 1440 seconds (4 hours) old
          print "   deleting old copy of $output_filename \n" if ($verbose eq "yes");
          unlink "$output_filename";                                  	#delete the file, which causes the rest of the script to run
+      }
+      #
+      if ( (-w $output_filename) && ($output_file_age >= 300) ) {     	#see if the file is writable and more than 300 seconds  old
+         open (OUT,"$output_filename") or die "Cannot open $output_filename for reading $! \n";
+         while (<OUT>) {                                                #read a line from the text file
+            $output_message = $_  if ( $_ =~ /[a-zA-Z]/);               #get the content of the output file into a variable
+            print "   output message is $output_message \n" if ($verbose eq "yes");
+         }                                                              #end of while loop
+         close OUT;                                                     #close filehandle
+         if ( $output_message =~ /status could not be determined/ ) {   #last iteration of script may have timed out
+            print "   deleting old copy of $output_filename due to previous script iteration timeout \n" if ($verbose eq "yes");
+            unlink "$output_filename";                                 	#delete the file, which causes the rest of the script to run
+         }
       }
       #
       # This section runs if the temporary file is too old, 
