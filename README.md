@@ -11,12 +11,12 @@ Internet access from RHEL host to query Red Hat subscription servers
 # Configuration
 
 The subscription-manager command requires root privileges to run.
-Rather than give the nagios user and additional privileges, this script will run daily from the root crontab,
+Rather than give the nagios user and additional privileges, this script will run hourly from the root crontab,
 generating a /tmp/nagios.check_rhel_subscription.tmp file.  This file will be read by the low-privileged nagios user
 when the check is run from nagios.
 Create a crontab entry for the root user similar to:
 ```
-    59 23 * * * /usr/local/nagios/libexec/check_rhel_subscription   >/dev/null 2>&1 #nagios helper script
+    59 * * * * /usr/local/nagios/libexec/check_rhel_subscription   >/dev/null 2>&1 #nagios helper script
 ```
 
 This script is executed remotely on a monitored system by the NRPE or check_by_ssh methods available in nagios.  
@@ -28,6 +28,8 @@ This assumes you already have ssh key pairs configured.
        use                             generic-service
        hostgroup_name                  all_rhel
        service_description             RHEL subscription
+       notification_interval           1440
+       max_check_attempts              240      ; Do not alert on temporary timeout of upstream subscription server
        check_command                   check_by_ssh!/usr/local/nagios/libexec/check_rhel_subscription
        }
 ```
