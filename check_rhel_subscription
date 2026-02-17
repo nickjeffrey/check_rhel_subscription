@@ -18,6 +18,7 @@
 #  2022-06-30	njeffrey	Change warning period from 30 days to 7 days
 #  2024-10-30	njeffrey	/usr/bin/subscription-manager version 1.24 and above will report Status:Disabled if Simple Content Access mode is enabled https://access.redhat.com/solutions/5060001
 #  2025-05-01	njeffrey	Regex bugfixes
+#  2026-02-17	njeffrey	Add support for RHEL10
 
 
 
@@ -166,6 +167,8 @@ sub sanity_checks {
    print "Running sanity_checks subroutine \n" if ($verbose eq "yes");
    #
    # confirm /usr/sbin/subscription-manager file exists 
+   $subscriptionmanager = "/usr/bin/subscription-manager" if (-e  "/usr/bin/subscription-manager"); #RHEL9  location
+   $subscriptionmanager = "/sbin/subscription-manager"    if (-e  "/sbin/subscription-manager");    #RHEL10 location
    if ( ! -e $subscriptionmanager ) {
       print "ERROR: Cannot find $subscriptionmanager \n";
       exit $CRITICAL;
@@ -329,8 +332,11 @@ sub check_overall_status {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open (IN,"$cmd 2>&1|");	#open filehandle
    while (<IN>) {						#read a line from the filehandle
-      if ( /Overall Status: Current/ ) {
+      if ( /Overall Status: Current/ ) {			#output on RHEL8
          $rhelsub{OverallStatus} = "Current";			#assign value to hash
+      }
+      if ( /Overall Status: Registered/ ) {			#output on RHEL10
+         $rhelsub{OverallStatus} = "Registered";			#assign value to hash
       }
       if ( /Overall Status: Unknown/ ) {
          $rhelsub{OverallStatus} = "unknown";			#assign value to hash
@@ -366,6 +372,16 @@ sub get_subscription_status {
    #  Status Details:
    #  Starts:         06/30/2020
    #  Ends:           06/30/2021
+   #
+   #
+   # Output of command will be similar to the following for a machine with a free developer subscription
+   #    +-------------------------------------------+
+   #    Installed Product Status
+   #    +-------------------------------------------+
+   #    Product Name: Red Hat Enterprise Linux for x86_64
+   #    Product ID:   479
+   #    Version:      10.1
+   #    Arch:         x86_64
    #
    #
    # Output of command will be similar to the following for a machine without a valid subscription:
@@ -439,6 +455,12 @@ sub print_output {
    #
    if ( $rhelsub{OverallStatus} eq "SimpleContentAccess"  ) {
       $output_message = "$CHECK_NAME OK - RHEL subscription is using Simple Content Access mode | $perf_data \n";
+      print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
+      print $output_message;
+      exit $OK;
+   }
+   if ( $rhelsub{OverallStatus} eq "Registered"  ) {
+      $output_message = "$CHECK_NAME OK - RHEL subscription is Registered | $perf_data \n";
       print_to_outputfile;           				#call subroutine to confirm the output is in the $output_filename used for subsequent script runs
       print $output_message;
       exit $OK;
